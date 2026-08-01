@@ -1,11 +1,10 @@
 name: Flutter Build Bot
 
 on:
-  # Dipanggil oleh Telegram bot via API
   workflow_dispatch:
     inputs:
       build_type:
-        description: 'Tipe build: apk-debug | apk-release | aab-release'
+        description: 'Tipe build'
         required: false
         default: 'apk-debug'
         type: choice
@@ -13,8 +12,12 @@ on:
           - apk-debug
           - apk-release
           - aab-release
+      send_telegram:
+        description: 'Kirim notifikasi ke Telegram?'
+        required: false
+        default: true
+        type: boolean
 
-  # Otomatis jalan setiap kali ada push ke branch main
   push:
     branches:
       - main
@@ -35,8 +38,10 @@ jobs:
       # ── 1. Checkout repo ──────────────────────────────────────────────────
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Ambil semua history buat versioning
 
-      # ── 2. Setup Java (dibutuhin Flutter Android build) ──────────────────
+      # ── 2. Setup Java 17 ──────────────────────────────────────────────────
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
@@ -48,11 +53,22 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.24.0'   # Ganti sesuai versi project lu
+          flutter-version: '3.24.0'
           channel: 'stable'
           cache: true
 
-      # ── 4. Tentukan tipe build ────────────────────────────────────────────
+      # ── 4. Cache Flutter dependencies ─────────────────────────────────────
+      - name: Cache Flutter Dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.pub-cache
+            build/
+          key: ${{ runner.os }}-flutter-${{ hashFiles('pubspec.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-flutter-
+
+      # ── 5. Tentukan tipe build ────────────────────────────────────────────
       - name: Set Build Type
         id: build_info
         run: |
@@ -64,11 +80,11 @@ jobs:
           echo "build_type=$BUILD_TYPE" >> $GITHUB_OUTPUT
           echo "🏗️ Build type: $BUILD_TYPE"
 
-      # ── 5. Get dependencies ───────────────────────────────────────────────
+      # ── 6. Get dependencies ───────────────────────────────────────────────
       - name: Flutter Pub Get
         run: flutter pub get
 
-      # ── 6. Build APK Debug ────────────────────────────────────────────────
+      # ── 7. Build APK Debug ────────────────────────────────────────────────
       - name: Build APK Debug
         if: steps.build_info.outputs.build_type == 'apk-debug'
         run: |
@@ -77,7 +93,7 @@ jobs:
             --target-platform android-arm,android-arm64,android-x64
           echo "✅ APK Debug selesai"
 
-      # ── 7. Build APK Release ──────────────────────────────────────────────
+      # ── 8. Build APK Release ──────────────────────────────────────────────
       - name: Build APK Release
         if: steps.build_info.outputs.build_type == 'apk-release'
         run: |
@@ -87,7 +103,7 @@ jobs:
             --target-platform android-arm,android-arm64,android-x64
           echo "✅ APK Release selesai"
 
-      # ── 8. Build AAB Release ──────────────────────────────────────────────
+      # ── 9. Build AAB Release ──────────────────────────────────────────────
       - name: Build AAB Release
         if: steps.build_info.outputs.build_type == 'aab-release'
         run: |
@@ -96,48 +112,75 @@ jobs:
             --split-debug-info=build/debug-info
           echo "✅ AAB Release selesai"
 
-      # ── 9. Rename & pindahin output ke satu folder ────────────────────────
+      # ── 10. Rename & pindahin output ─────────────────────────────────────
       - name: Prepare Output Files
+        id: output_files
         run: |
           mkdir -p output
           BUILD_TYPE="${{ steps.build_info.outputs.build_type }}"
           TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+          SHORT_SHA=$(git rev-parse --short HEAD)
           APP_NAME=$(grep '^name:' pubspec.yaml | awk '{print $2}' | tr -d '\r')
+          APP_VERSION=$(grep '^version:' pubspec.yaml | awk '{print $2}' | tr -d '\r')
 
           if [ "$BUILD_TYPE" = "apk-debug" ]; then
             APK_PATH=$(find build/app/outputs/flutter-apk -name "*.apk" | head -1)
-            cp "$APK_PATH" "output/${APP_NAME}_debug_${TIMESTAMP}.apk"
+            OUTPUT_NAME="${APP_NAME}_debug_${APP_VERSION}_${SHORT_SHA}.apk"
+            cp "$APK_PATH" "output/$OUTPUT_NAME"
 
           elif [ "$BUILD_TYPE" = "apk-release" ]; then
             APK_PATH=$(find build/app/outputs/flutter-apk -name "app-release.apk" | head -1)
-            cp "$APK_PATH" "output/${APP_NAME}_release_${TIMESTAMP}.apk"
+            OUTPUT_NAME="${APP_NAME}_release_${APP_VERSION}_${SHORT_SHA}.apk"
+            cp "$APK_PATH" "output/$OUTPUT_NAME"
 
           elif [ "$BUILD_TYPE" = "aab-release" ]; then
             AAB_PATH=$(find build/app/outputs/bundle/release -name "*.aab" | head -1)
-            cp "$AAB_PATH" "output/${APP_NAME}_release_${TIMESTAMP}.aab"
+            OUTPUT_NAME="${APP_NAME}_release_${APP_VERSION}_${SHORT_SHA}.aab"
+            cp "$AAB_PATH" "output/$OUTPUT_NAME"
           fi
 
+          echo "output_name=$OUTPUT_NAME" >> $GITHUB_OUTPUT
           echo "📦 Output files:"
           ls -lh output/
 
-      # ── 10. Upload artifact ke GitHub ─────────────────────────────────────
+      # ── 11. Upload artifact ke GitHub ─────────────────────────────────────
       - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: flutter-build-${{ steps.build_info.outputs.build_type }}-${{ github.run_number }}
+          name: ${{ steps.output_files.outputs.output_name }}
           path: output/
-          retention-days: 3     # Simpan 3 hari, hemat storage
+          retention-days: 3
           if-no-files-found: error
 
-      # ── 11. Summary ───────────────────────────────────────────────────────
+      # ── 12. Kirim notifikasi ke Telegram (Opsional) ──────────────────────
+      - name: Send Telegram Notification
+        if: github.event.inputs.send_telegram == 'true'
+        uses: appleboy/telegram-action@master
+        with:
+          to: ${{ secrets.TELEGRAM_CHAT_ID }}
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          message: |
+            🚀 **Flutter Build Selesai!**
+            
+            📱 App: ${{ steps.output_files.outputs.output_name }}
+            🏗️ Type: ${{ steps.build_info.outputs.build_type }}
+            📦 Size: $(du -h output/* | cut -f1)
+            🔗 [Download](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            
+            ⏱️ Duration: ${{ github.run_duration }}
+
+      # ── 13. Summary ───────────────────────────────────────────────────────
       - name: Build Summary
         if: always()
         run: |
           echo "## 🏗️ Flutter Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Key | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|---|---|" >> $GITHUB_STEP_SUMMARY
           echo "| Build Type | ${{ steps.build_info.outputs.build_type }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| App Name | $(grep '^name:' pubspec.yaml | awk '{print $2}') |" >> $GITHUB_STEP_SUMMARY
+          echo "| Version | $(grep '^version:' pubspec.yaml | awk '{print $2}') |" >> $GITHUB_STEP_SUMMARY
           echo "| Run Number | #${{ github.run_number }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Triggered By | ${{ github.event_name }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Trigger | ${{ github.event_name }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Commit | ${{ github.sha }} |" >> $GITHUB_STEP_SUMMARY
-          
+          echo "| Artifact | ${{ steps.output_files.outputs.output_name }} |" >> $GITHUB_STEP_SUMMARY
