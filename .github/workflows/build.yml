@@ -46,6 +46,14 @@ jobs:
         run: |
           echo "📥 Downloading project from: ${{ inputs.zip_url }}"
           curl -L -o project.zip "${{ inputs.zip_url }}"
+          
+          # Cek apakah file beneran ZIP
+          if ! file project.zip | grep -q "Zip archive"; then
+            echo "❌ File bukan ZIP! Isi file:"
+            cat project.zip
+            exit 1
+          fi
+          
           unzip project.zip -d project
           ls -la project/
 
