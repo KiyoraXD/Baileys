@@ -1,0 +1,65 @@
+name: Web to APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      web_url:
+        description: 'URL website'
+        required: true
+        type: string
+      app_name:
+        description: 'Nama Aplikasi'
+        required: true
+        type: string
+      icon_url:
+        description: 'URL Icon'
+        required: true
+        type: string
+
+jobs:
+  build-web2apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: 'latest'
+          packages: 'platforms;android-34 build-tools;34.0.0'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install PWA Builder
+        run: npm install -g @pwa/builder
+
+      - name: Create Web2APK project
+        run: |
+          mkdir webapp
+          cd webapp
+          npx -y pwabuilder-packager --url "${{ inputs.web_url }}" --appName "${{ inputs.app_name }}" --icon "${{ inputs.icon_url }}"
+
+      - name: Build with Gradle
+        working-directory: ./webapp
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: webapp-debug
+          path: webapp/app/build/outputs/apk/debug/*.apk
+          retention-days: 7
