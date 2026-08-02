@@ -4,27 +4,23 @@ on:
   workflow_dispatch:
     inputs:
       zip_url:
-        description: 'URL ZIP file project Flutter'
+        description: 'URL ZIP project Flutter'
         required: true
         type: string
       tag:
-        description: 'Tag untuk release'
+        description: 'Tag build'
         required: true
         type: string
       build_type:
-        description: 'Mode build (debug/release)'
+        description: 'Tipe build (debug/release)'
         required: true
         default: 'release'
-        type: choice
-        options:
-          - debug
-          - release
+        type: string
 
 jobs:
   build:
-    name: Build Flutter APK
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 25
     
     steps:
       - name: Checkout repository
@@ -36,67 +32,41 @@ jobs:
           distribution: 'zulu'
           java-version: '17'
 
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: 'latest'
+          packages: 'platforms;android-34 build-tools;34.0.0'
+
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
+          flutter-version: '3.24.0'
           channel: 'stable'
-          cache: true
 
-      - name: Download project ZIP
+      - name: Download project zip
         run: |
-          echo "📥 Downloading project from: ${{ inputs.zip_url }}"
-          curl -L -o project.zip "${{ inputs.zip_url }}"
-          
-          # Cek apakah file beneran ZIP
-          if ! file project.zip | grep -q "Zip archive"; then
-            echo "❌ File bukan ZIP! Isi file:"
-            cat project.zip
-            exit 1
-          fi
-          
-          unzip project.zip -d project
+          echo "⬇️ Downloading project from: ${{ inputs.zip_url }}"
+          wget -O project.zip "${{ inputs.zip_url }}"
+          unzip -q project.zip -d project/
           ls -la project/
 
-      - name: Get Flutter dependencies
+      - name: Flutter pub get
         working-directory: ./project
-        run: |
-          flutter pub get
-          flutter clean
+        run: flutter pub get
 
-      - name: Build APK
+      - name: Build APK (${{ inputs.build_type }})
         working-directory: ./project
         run: |
           if [ "${{ inputs.build_type }}" == "debug" ]; then
             flutter build apk --debug
           else
-            flutter build apk --release --no-tree-shake-icons
+            flutter build apk --release
           fi
 
-      - name: Find APK file
-        id: find_apk
-        run: |
-          if [ "${{ inputs.build_type }}" == "debug" ]; then
-            APK_PATH=$(find ./project/build/app/outputs/flutter-apk -name "*.apk" | head -n 1)
-          else
-            APK_PATH=$(find ./project/build/app/outputs/apk/release -name "*.apk" | head -n 1)
-          fi
-          echo "apk_path=$APK_PATH" >> $GITHUB_OUTPUT
-          echo "📱 APK found at: $APK_PATH"
-
-      - name: Upload APK as artifact
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: flutter-app
-          path: ${{ steps.find_apk.outputs.apk_path }}
+          name: app-${{ inputs.build_type }}
+          path: project/build/app/outputs/flutter-apk/*.apk
           retention-days: 7
-
-      - name: Upload to GitHub Release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ inputs.tag }}
-          files: ${{ steps.find_apk.outputs.apk_path }}
-          draft: false
-          prerelease: true
-          generate_release_notes: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
